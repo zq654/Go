@@ -22,6 +22,7 @@ type PutArgs struct {
 	Key     string
 	Value   string
 	Version Tversion
+	TimeOut int
 }
 
 type PutReply struct {
