@@ -9,7 +9,7 @@
 
 
 - [x] [Lab 1: distributed big-data framework (like MapReduce)](./Lab/MapReduce框架.md)
-- [ ] Lab 2: client/server vs unreliable network
+- [x] Lab 2: client/server vs unreliable network
 - [ ] Lab 3: fault tolerance using replication (Raft)
 - [ ] Lab 4: a fault-tolerant database
 - [ ] Lab 5: scalable database performance via sharding
