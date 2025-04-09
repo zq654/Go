@@ -6,6 +6,7 @@ import (
 	"6.5840/kvtest1"
 	"context"
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -24,6 +25,8 @@ type Lock struct {
 	// You may add code here
 }
 
+var once sync.Once
+
 // The tester calls MakeLock() and passes in a k/v clerk; your code can
 // perform a Put or Get by calling lk.ck.Put() or lk.ck.Get().
 //
@@ -40,10 +43,13 @@ func MakeLock(ck kvtest.IKVClerk, l string) *Lock {
 	nowClientName := kvtest.RandValue(8)
 	lk.lockName = lockName
 	lk.clientName = nowClientName
-	err := lk.ck.Put(lockName, "", 0)
-	if err == rpc.ErrVersion {
-		kvsrv.DPrintf("重复初始化了锁")
+	ini := func() {
+		err := lk.ck.Put(lockName, "", 0)
+		if err == rpc.ErrVersion {
+			kvsrv.DPrintf("重复初始化了锁")
+		}
 	}
+	once.Do(ini)
 	return lk
 }
 
