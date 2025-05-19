@@ -20,7 +20,10 @@ const (
 
 func oneClient(t *testing.T, me int, ck kvtest.IKVClerk, done chan struct{}) kvtest.ClntRes {
 	lk := MakeLock(ck, "l")
-	ck.Put("l0", "", 0)
+	err := ck.Put("l0", "", 0)
+	if err == rpc.OK {
+		kvsrv.DPrintf("Put Value l0 Success")
+	}
 	for i := 1; true; i++ {
 		select {
 		case <-done:
