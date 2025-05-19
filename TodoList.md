@@ -16,5 +16,7 @@
   - [ ] [图灵 Kaka教程](https://www.bilibili.com/video/BV1Kwx1e8E1C/)
   - [ ] [Go 语言的 Kafka 库](https://github.com/segmentio/kafka-go)
   - [ ] [Kafka APIS](http://docs.confluent.io/current/clients/index.html)
-
 - Kubernetes
+- Redis 深入
+- [小徐先生的编程世界源码解析](https://mp.weixin.qq.com/mp/appmsgalbum?__biz=MzkxMjQzMjA0OQ==&action=getalbum&album_id=2709593649634033668&subscene=159&subscene=23)
+
