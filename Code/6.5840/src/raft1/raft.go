@@ -29,14 +29,6 @@ import (
 	"6.5840/tester1"
 )
 
-type status string
-
-const (
-	_Follower  status = "Follower"
-	_Candidate status = "Candidate"
-	_Leader    status = "Leader"
-)
-
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
 // tester) on the same server, via the applyCh passed to Make(). set
@@ -60,7 +52,7 @@ type ApplyMsg struct {
 
 // A Go object implementing a single Raft peer.
 type Raft struct {
-	mu        sync.RWMutex        // Lock to protect shared access to this peer's state
+	mu        sync.Mutex          // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
 	persister *tester.Persister   // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
@@ -69,15 +61,7 @@ type Raft struct {
 	// Your data here (3A, 3B, 3C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-	currentTerm int    //当前节点能感知到的最大任期
-	votedFor    int    //当前节点投票给哪个候选者
-	selfStatus  status //当前节点身份
-	logs        []myLog
-}
-type myLog struct {
-	logTerm  int
-	logIndex int
-	logMsg   string
+
 }
 
 // return currentTerm and whether this server
@@ -87,13 +71,6 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	// Your code here (3A).
-	//加锁避免在读取任期和身份时被修改
-	rf.mu.RLock()
-	defer rf.mu.RUnlock()
-
-	term = rf.currentTerm
-	isleader = (rf.selfStatus == _Leader)
-
 	return term, isleader
 }
 
@@ -148,28 +125,17 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // field names must start with capital letters!
 type RequestVoteArgs struct {
 	// Your data here (3A, 3B).
-	// 若要请求投票需要传递
-	CandidateID  int // 1.who am i 也就是表达是谁在请求获取选票
-	CurrentTerm  int // 2.current term 表达candidate所在的任期
-	LastLogIndex int // 3.表示candidate 所同步的最大日志条目
-	LastLogTerm  int
 }
 
 // example RequestVote RPC reply structure.
 // field names must start with capital letters!
 type RequestVoteReply struct {
 	// Your data here (3A).
-	Term        int  //follower 将自己感知到的任期发送给candidate ，若这个term 大于 current term 则取消投票修改任期
-	VoteGranted bool //是否同意投票给candidate
 }
 
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
-	//加锁 避免竞争
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -246,7 +212,6 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) ticker() {
-
 	for rf.killed() == false {
 
 		// Your code here (3A)
@@ -255,27 +220,7 @@ func (rf *Raft) ticker() {
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
 		ms := 50 + (rand.Int63() % 300)
-
 		time.Sleep(time.Duration(ms) * time.Millisecond)
-		//这个定时器用于暂停随机时间用于开启选举
-		//当接收到心跳的时候应该重置等待时间
-		rf.mu.Lock()
-		defer rf.mu.Unlock()
-		args := RequestVoteArgs{
-			CandidateID:  rf.me,
-			CurrentTerm:  rf.currentTerm,
-			LastLogIndex: rf.logs[len(rf.logs)-1].logIndex,
-			LastLogTerm:  rf.logs[len(rf.logs)-1].logTerm,
-		}
-		reply := RequestVoteReply{}
-
-		for index, _ := range rf.peers {
-			if index == rf.me {
-				continue
-			}
-			rf.sendRequestVote(index, &args, &reply)
-
-		}
 	}
 }
 
@@ -288,7 +233,8 @@ func (rf *Raft) ticker() {
 // tester or service expects Raft to send ApplyMsg messages.
 // Make() must return quickly, so it should start goroutines
 // for any long-running work.
-func Make(peers []*labrpc.ClientEnd, me int, persister *tester.Persister, applyCh chan ApplyMsg) *Raft {
+func Make(peers []*labrpc.ClientEnd, me int,
+	persister *tester.Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
 	rf.peers = peers
 	rf.persister = persister
@@ -296,7 +242,6 @@ func Make(peers []*labrpc.ClientEnd, me int, persister *tester.Persister, applyC
 
 	// Your initialization code here (3A, 3B, 3C).
 
-	rf.votedFor = -1
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
