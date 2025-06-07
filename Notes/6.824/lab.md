@@ -12,4 +12,4 @@
 - [x] Lab 2: client/server vs unreliable network
 - [ ] Lab 3: fault tolerance using replication (Raft)
 - [ ] Lab 4: a fault-tolerant database
-- [ ] Lab 5: scalable database performance via sharding
+- [ ] Lab 5: scalable database performance via shardingRa
