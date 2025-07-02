@@ -18,6 +18,9 @@ package raft
 //
 
 import (
+	"log"
+	"os"
+
 	//	"bytes"
 	"math/rand"
 	"sync"
@@ -28,6 +31,18 @@ import (
 	"6.5840/labrpc"
 	"6.5840/tester1"
 )
+
+const (
+	Leader    int8 = 0
+	Candidate int8 = 1
+	Follower  int8 = 2
+)
+
+var logFile, _ = os.OpenFile("../logs/raft.log", os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0777)
+var cLog = log.New(logFile, "[Candidate]", log.Ldate|log.Ltime)
+var lLog = log.New(logFile, "[Leader]", log.Ldate|log.Ltime)
+var fLog = log.New(logFile, "[Follower]", log.Ldate|log.Ltime)
+var aLog = log.New(logFile, "[All]", log.Ldate|log.Ltime)
 
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -52,7 +67,7 @@ type ApplyMsg struct {
 
 // A Go object implementing a single Raft peer.
 type Raft struct {
-	mu        sync.Mutex          // Lock to protect shared access to this peer's state
+	mu        sync.RWMutex        // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
 	persister *tester.Persister   // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
@@ -61,7 +76,25 @@ type Raft struct {
 	// Your data here (3A, 3B, 3C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
+	currentTerm int
+	votedFor    int
+	log         []raftLogs
 
+	commitIndex int
+	lastApplied int
+
+	nextIndex  []int
+	matchIndex []int
+
+	role          int8  //节省空间
+	voteCount     int64 //后续原子性操作
+	selectTime    int64 //时间戳 每当接收到心跳了 就在当前时间上增加随机时间
+	heartbeatChan chan struct{}
+}
+
+type raftLogs struct {
+	index int
+	term  int
 }
 
 // return currentTerm and whether this server
@@ -71,7 +104,45 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	// Your code here (3A).
+	rf.mu.RLock()
+	term = rf.currentTerm
+	isleader = rf.role == Leader
+	rf.mu.RUnlock()
 	return term, isleader
+}
+
+func (rf *Raft) GetRole() int8 {
+	rf.mu.RLock()
+	defer rf.mu.RUnlock()
+	return rf.role
+}
+
+func (rf *Raft) GetTerm() int {
+	var term int
+	// Your code here (3A).
+	rf.mu.RLock()
+	term = rf.currentTerm
+	rf.mu.RUnlock()
+	return term
+}
+
+func (rf *Raft) GetVoteFor() int {
+	var voteFor int
+	// Your code here (3A).
+	rf.mu.RLock()
+	voteFor = rf.votedFor
+	rf.mu.RUnlock()
+	return voteFor
+}
+
+func (rf *Raft) GetLogTermAndIndex() (int, int) {
+	var logTerm, logIndex int
+	// Your code here (3A).
+	rf.mu.RLock()
+	logTerm = rf.log[len(rf.log)-1].term
+	logIndex = rf.log[len(rf.log)-1].index
+	rf.mu.RUnlock()
+	return logTerm, logIndex
 }
 
 // save Raft's persistent state to stable storage,
@@ -125,17 +196,186 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // field names must start with capital letters!
 type RequestVoteArgs struct {
 	// Your data here (3A, 3B).
+	term         int
+	candidateId  int
+	lastLogTerm  int
+	lastLogIndex int
 }
 
 // example RequestVote RPC reply structure.
 // field names must start with capital letters!
 type RequestVoteReply struct {
 	// Your data here (3A).
+	term        int
+	voteGranted bool
+}
+type AppendEntriesArgs struct {
+	term         int
+	leaderId     int
+	prevLogIndex int
+	prevLogTerm  int
+	entries      []raftLogs
+	leaderCommit int
+}
+type AppendEntriesReply struct {
+	term    int
+	success bool
+}
+
+func (rf *Raft) MonitorHeartBeat() {
+	for {
+		select {
+		case <-rf.heartbeatChan:
+			rf.SendHeartBeat()
+		}
+	}
+}
+func (rf *Raft) SendHeartBeat() {
+	for rf.GetRole() == Leader {
+		args := &AppendEntriesArgs{}
+		reply := &AppendEntriesReply{}
+		rf.mu.Lock()
+		args.term = rf.currentTerm
+		args.leaderId = rf.me
+		rf.mu.Unlock()
+		for i := 0; i < len(rf.peers); i++ {
+			if i == rf.me {
+				continue
+			}
+			go rf.peers[i].Call("Raft.AppendEntries", args, reply)
+			if reply.term > args.term {
+				rf.mu.Lock()
+				if reply.term > rf.currentTerm {
+					rf.role = Follower
+					lLog.Printf("leader %d(term:%d) receive bigger term from point %d(term%d) ,then become follower", rf.me, rf.currentTerm, i, reply.term)
+					rf.currentTerm = reply.term
+					rf.selectTime = time.Now().UnixMilli() + 50 + (rand.Int63() % 300)
+					rf.votedFor = -1
+					atomic.StoreInt64(&rf.voteCount, 0)
+				} else {
+					lLog.Printf("leader %d recieve bigger term but leader term has change", rf.me)
+				}
+				rf.mu.Unlock()
+			}
+		}
+	}
+}
+
+// 无论执行什么操作 在执行操作之前都要确认自己的身份
+func (rf *Raft) startSelect() {
+	args := &RequestVoteArgs{}
+	reply := &RequestVoteReply{}
+	rf.mu.Lock()
+	args.term = rf.currentTerm
+	args.candidateId = rf.me
+	args.lastLogTerm = rf.log[len(rf.log)-1].term
+	args.lastLogIndex = rf.log[len(rf.log)-1].index
+	rf.role = Candidate
+	rf.votedFor = rf.me
+	atomic.StoreInt64(&rf.voteCount, 1)
+	rf.mu.Unlock()
+	for i := 0; i < len(rf.peers) && rf.GetRole() == Candidate; i++ {
+		if i == rf.me {
+			continue
+		}
+		go rf.collectVoteData(i, args, reply)
+	}
+}
+
+func (rf *Raft) collectVoteData(index int, args *RequestVoteArgs, reply *RequestVoteReply) {
+	cLog.Printf("point %d request vote for %d", rf.me, index)
+	rf.sendRequestVote(index, args, reply)
+
+	if reply.voteGranted && rf.GetRole() == Candidate {
+		atomic.AddInt64(&rf.voteCount, 1)
+		if int(atomic.LoadInt64(&rf.voteCount)) > len(rf.peers)/2 {
+			rf.mu.Lock()
+			if rf.role == Candidate {
+				rf.role = Leader
+				rf.heartbeatChan <- struct{}{}
+				cLog.Printf("point %d begin leader", rf.me)
+			}
+			rf.mu.Unlock()
+		}
+	} else {
+		//如果当发现有节点的任期大于自己 无论原本身份是什么都修改身份并且重置票数
+		if reply.term > args.term {
+			rf.mu.Lock()
+			if reply.term > rf.currentTerm {
+				rf.currentTerm = reply.term
+				cLog.Printf("point %d update term to %d", rf.me, rf.currentTerm)
+			}
+			rf.role = Follower
+			rf.votedFor = -1
+			atomic.StoreInt64(&rf.voteCount, 0)
+			rf.selectTime = time.Now().UnixMilli() + 50 + (rand.Int63() % 300)
+			cLog.Printf("point %d begin follower", rf.me)
+			rf.mu.Unlock()
+		}
+		//如果任期并没有大于当前任期 表示投票给其他人
+		//或者 当前term与arg时的term不一样 表示发现了其他term大的节点
+	}
+
 }
 
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
+
+	if args.term < rf.GetTerm() {
+		reply.term = rf.GetTerm()
+		reply.voteGranted = false
+		aLog.Printf("point %d reject vote for %d", rf.me, args.candidateId)
+		return
+	}
+	if args.term > rf.GetTerm() {
+		rf.mu.Lock()
+		if args.term > rf.currentTerm {
+			rf.currentTerm = args.term
+			rf.votedFor = args.candidateId
+			rf.role = Follower
+			aLog.Printf("point %d begin follower", rf.me)
+			aLog.Printf("point %d approval vote for %d", rf.me, args.candidateId)
+			aLog.Printf("point %d update term to %d", rf.me, args.term)
+			rf.selectTime = time.Now().UnixMilli() + 50 + (rand.Int63() % 300)
+			atomic.StoreInt64(&rf.voteCount, 0)
+			reply.term = args.term
+			reply.voteGranted = true
+		} else {
+			aLog.Printf("point %d not approval vote for %d", rf.me, args.candidateId)
+			reply.term = rf.currentTerm
+			reply.voteGranted = false
+		}
+		rf.mu.Unlock()
+
+		return
+	}
+	if args.term == rf.GetTerm() {
+		if rf.GetVoteFor() != -1 {
+			reply.term = args.term
+			reply.voteGranted = false
+			aLog.Printf("point %d reject vote for %d", rf.me, args.candidateId)
+			return
+		} else {
+			term, index := rf.GetLogTermAndIndex()
+			if term > args.lastLogTerm || (term == args.lastLogTerm && index > args.lastLogIndex) {
+				reply.term = args.term
+				reply.voteGranted = false
+				aLog.Printf("point %d reject vote for %d", rf.me, args.candidateId)
+				return
+			} else {
+				rf.mu.Lock()
+				rf.votedFor = args.candidateId
+				rf.role = Follower
+				rf.selectTime = time.Now().UnixMilli() + 50 + (rand.Int63() % 300)
+				aLog.Printf("point %d begin follower", rf.me)
+				aLog.Printf("point %d approval vote for %d", rf.me, args.candidateId)
+				rf.mu.Unlock()
+				reply.term = args.term
+				reply.voteGranted = true
+			}
+		}
+	}
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -221,6 +461,10 @@ func (rf *Raft) ticker() {
 		// milliseconds.
 		ms := 50 + (rand.Int63() % 300)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
+		if time.Now().UnixMilli() > atomic.LoadInt64(&rf.selectTime) && rf.GetRole() == Follower {
+			rf.startSelect() //开启选举
+			fLog.Printf("point %d start select", rf.me)
+		}
 	}
 }
 
@@ -241,7 +485,15 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (3A, 3B, 3C).
-
+	rf.mu = sync.RWMutex{}
+	rf.role = Follower
+	rf.votedFor = -1
+	rf.heartbeatChan = make(chan struct{})
+	rf.selectTime = time.Now().UnixMilli() + 50 + (rand.Int63() % 300)
+	rf.log = make([]raftLogs, 0)
+	rf.log = append(rf.log, raftLogs{term: 0, index: 0})
+	rf.voteCount = 0
+	rf.currentTerm = 0
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
